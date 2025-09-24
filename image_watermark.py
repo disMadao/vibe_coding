@@ -1,205 +1,159 @@
 import os
-import sys
 import argparse
-from datetime import datetime
 from PIL import Image, ImageDraw, ImageFont
-import exifread
+from PIL.ExifTags import TAGS
+import piexif
+from datetime import datetime
 
-
-def get_exif_datetime(image_path):
-    """从图片中获取EXIF信息中的拍摄时间"""
+def get_exif_date(image_path):
+    """
+    从图片的EXIF信息中提取拍摄日期
+    """
     try:
-        with open(image_path, 'rb') as f:
-            tags = exifread.process_file(f)
-            # 尝试获取不同格式的日期时间标签
-            datetime_tags = [
-                'EXIF DateTimeOriginal',
-                'EXIF DateTimeDigitized',
-                'Image DateTime'
-            ]
-            
-            for tag in datetime_tags:
-                if tag in tags:
-                    datetime_str = str(tags[tag])
-                    # 尝试解析日期时间字符串
-                    try:
-                        # 常见的EXIF日期格式: 'YYYY:MM:DD HH:MM:SS'
-                        if ':' in datetime_str:
-                            date_part = datetime_str.split(' ')[0].replace(':', '-')
-                        else:
-                            # 可能的其他格式
-                            date_part = datetime_str[:8]  # 假设格式为'YYYYMMDD'
-                            date_part = f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:8]}"
-                        return date_part
-                    except:
-                        continue
-            # 如果没有找到有效的日期，返回当前日期
-            return datetime.now().strftime('%Y-%m-%d')
+        # 使用piexif库读取EXIF信息
+        exif_dict = piexif.load(image_path)
+
+        # 尝试从EXIF中获取拍摄时间
+        # 不同相机可能使用不同的标签
+        date_tags = [
+            piexif.ExifIFD.DateTimeOriginal,  # 36867
+            piexif.ImageIFD.DateTime,         # 306
+            piexif.ExifIFD.DateTimeDigitized  # 36868
+        ]
+
+        for tag in date_tags:
+            if tag in exif_dict["Exif"]:
+                date_str = exif_dict["Exif"][tag].decode('utf-8')
+                # 将日期字符串转换为datetime对象
+                date_obj = datetime.strptime(date_str, '%Y:%m:%d %H:%M:%S')
+                # 返回年月日格式
+                return date_obj.strftime('%Y-%m-%d')
+
+        # 如果找不到EXIF日期信息，返回None
+        return None
     except Exception as e:
-        print(f"获取EXIF信息时出错: {e}")
-        # 出错时返回当前日期
-        return datetime.now().strftime('%Y-%m-%d')
+        print(f"读取 {image_path} 的EXIF信息时出错: {e}")
+        return None
 
-
-def add_watermark(image_path, output_path, watermark_text, font_size=20, color=(255, 255, 255), position='bottom_right'):
-    """给图片添加水印"""
+def add_watermark(image_path, output_path, watermark_text, font_size, color, position):
+    """
+    为图片添加水印
+    """
     try:
         # 打开图片
-        image = Image.open(image_path).convert('RGBA')
+        image = Image.open(image_path)
+
+        # 创建绘图对象
         draw = ImageDraw.Draw(image)
-        
-        # 获取图片尺寸
-        width, height = image.size
-        
+
         # 尝试加载字体，如果失败则使用默认字体
         try:
-            # 在Windows上尝试加载系统字体
-            if os.name == 'nt':
-                font = ImageFont.truetype("Arial.ttf", font_size)
-            else:
-                # 在其他系统上尝试加载不同的字体
-                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", font_size)
+            font = ImageFont.truetype("arial.ttf", font_size)
         except:
-            # 如果无法加载指定字体，使用默认字体
             font = ImageFont.load_default()
-        
-        # 获取文本尺寸
-        try:
-            # Pillow 8.0.0+ 支持的方法
-            text_width, text_height = draw.textsize(watermark_text, font=font)
-        except AttributeError:
-            # 较新版本的Pillow使用的方法
-            bbox = draw.textbbox((0, 0), watermark_text, font=font)
-            text_width = bbox[2] - bbox[0]
-            text_height = bbox[3] - bbox[1]
-        
-        # 根据位置确定文本的位置
-        margin = 10  # 边距
-        if position == 'top_left':
-            x, y = margin, margin
-        elif position == 'top_right':
-            x, y = width - text_width - margin, margin
-        elif position == 'bottom_left':
-            x, y = margin, height - text_height - margin
-        elif position == 'center':
-            x, y = (width - text_width) // 2, (height - text_height) // 2
-        else:  # 默认右下角
-            x, y = width - text_width - margin, height - text_height - margin
-        
-        # 添加文本水印，添加黑色边框以提高可读性
-        # 创建一个半透明的文本层
-        text_layer = Image.new('RGBA', image.size, (255, 255, 255, 0))
-        text_draw = ImageDraw.Draw(text_layer)
-        
-        # 绘制文本阴影以提高可读性
-        shadow_color = (0, 0, 0, 128)  # 半透明黑色
-        for offset in [(1, 1), (-1, 1), (1, -1), (-1, -1)]:
-            text_draw.text((x + offset[0], y + offset[1]), watermark_text, font=font, fill=shadow_color)
-        
-        # 绘制主文本
-        text_draw.text((x, y), watermark_text, font=font, fill=color + (200,))  # 添加透明度
-        
-        # 将文本层与原图像合并
-        result = Image.alpha_composite(image, text_layer)
-        
-        # 保存结果
-        if result.mode == 'RGBA':
-            result = result.convert('RGB')
-        result.save(output_path)
-        print(f"已保存带水印的图片: {output_path}")
-    except Exception as e:
-        print(f"处理图片时出错: {e}")
 
+        # 计算文本尺寸
+        text_bbox = draw.textbbox((0, 0), watermark_text, font=font)
+        text_width = text_bbox[2] - text_bbox[0]
+        text_height = text_bbox[3] - text_bbox[1]
+
+        # 计算水印位置
+        img_width, img_height = image.size
+
+        if position == "top-left":
+            x = 10
+            y = 10
+        elif position == "top-right":
+            x = img_width - text_width - 10
+            y = 10
+        elif position == "bottom-left":
+            x = 10
+            y = img_height - text_height - 10
+        elif position == "bottom-right":
+            x = img_width - text_width - 10
+            y = img_height - text_height - 10
+        elif position == "center":
+            x = (img_width - text_width) // 2
+            y = (img_height - text_height) // 2
+        else:
+            x = img_width - text_width - 10
+            y = img_height - text_height - 10
+
+        # 添加水印
+        draw.text((x, y), watermark_text, font=font, fill=color)
+
+        # 保存图片
+        image.save(output_path)
+        print(f"已添加水印: {output_path}")
+
+    except Exception as e:
+        print(f"处理图片 {image_path} 时出错: {e}")
+
+def process_directory(input_dir, font_size, color, position):
+    """
+    处理目录中的所有图片文件
+    """
+    # 创建输出目录
+    output_dir = os.path.join(input_dir, f"{os.path.basename(input_dir)}_watermark")
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    # 支持的图片格式
+    supported_formats = ('.jpg', '.jpeg', '.png', '.tiff', '.bmp')
+
+    # 遍历目录中的文件
+    for filename in os.listdir(input_dir):
+        if filename.lower().endswith(supported_formats):
+            input_path = os.path.join(input_dir, filename)
+
+            # 获取EXIF日期信息
+            date_str = get_exif_date(input_path)
+
+            if date_str:
+                watermark_text = date_str
+            else:
+                watermark_text = "无日期信息"
+
+            # 生成输出路径
+            name, ext = os.path.splitext(filename)
+            output_filename = f"{name}_watermarked{ext}"
+            output_path = os.path.join(output_dir, output_filename)
+
+            # 添加水印
+            add_watermark(input_path, output_path, watermark_text, font_size, color, position)
 
 def main():
-    """主函数"""
-    # 解析命令行参数
-    parser = argparse.ArgumentParser(description='给图片添加基于拍摄日期的水印')
-    parser.add_argument('image_path', help='图片文件或目录路径')
-    parser.add_argument('--font-size', type=int, default=20, help='水印字体大小')
-    parser.add_argument('--color', default='white', help='水印颜色（英文名称或RGB值，如"255,255,255"）')
-    parser.add_argument('--position', choices=['top_left', 'top_right', 'bottom_left', 'bottom_right', 'center'],
-                        default='bottom_right', help='水印位置')
-    
+    """
+    主函数，解析命令行参数并执行程序
+    """
+    parser = argparse.ArgumentParser(description='为图片添加基于EXIF拍摄时间的水印')
+    parser.add_argument('input_dir', help='输入图片目录路径')
+    parser.add_argument('-s', '--size', type=int, default=20, help='字体大小（默认20）')
+    parser.add_argument('-c', '--color', default='white', help='水印颜色（默认白色）')
+    parser.add_argument('-p', '--position',
+                        choices=['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center'],
+                        default='bottom-right',
+                        help='水印位置（默认右下角）')
+
     args = parser.parse_args()
-    
-    # 解析颜色参数
-    if args.color.lower() == 'white':
-        color = (255, 255, 255)
-    elif args.color.lower() == 'black':
-        color = (0, 0, 0)
-    elif args.color.lower() == 'red':
-        color = (255, 0, 0)
-    elif args.color.lower() == 'green':
-        color = (0, 255, 0)
-    elif args.color.lower() == 'blue':
-        color = (0, 0, 255)
-    elif ',' in args.color:
-        # 尝试解析RGB值
-        try:
-            r, g, b = map(int, args.color.split(','))
-            color = (r, g, b)
-        except:
-            print("颜色格式错误，使用默认颜色白色")
-            color = (255, 255, 255)
-    else:
-        color = (255, 255, 255)  # 默认白色
-    
-    # 处理输入路径
-    if os.path.isdir(args.image_path):
-        # 处理目录
-        dir_path = args.image_path
-        # 创建输出目录
-        output_dir = f"{dir_path}_watermark"
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # 获取目录中的所有图片文件
-        image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff']
-        image_files = []
-        
-        for root, dirs, files in os.walk(dir_path):
-            for file in files:
-                if any(file.lower().endswith(ext) for ext in image_extensions):
-                    image_files.append(os.path.join(root, file))
-        
-        # 处理每个图片文件
-        for image_file in image_files:
-            # 相对于原目录的路径
-            rel_path = os.path.relpath(image_file, dir_path)
-            # 输出路径
-            output_file = os.path.join(output_dir, rel_path)
-            # 创建输出目录结构
-            os.makedirs(os.path.dirname(output_file), exist_ok=True)
-            
-            # 获取水印文本
-            watermark_text = get_exif_datetime(image_file)
-            # 添加水印
-            add_watermark(image_file, output_file, watermark_text, args.font_size, color, args.position)
-    else:
-        # 处理单个文件
-        if not os.path.isfile(args.image_path):
-            print(f"文件不存在: {args.image_path}")
-            sys.exit(1)
-        
-        # 获取目录和文件名
-        dir_path = os.path.dirname(args.image_path)
-        if not dir_path:
-            dir_path = '.'
-        
-        file_name = os.path.basename(args.image_path)
-        
-        # 创建输出目录
-        output_dir = f"{dir_path}_watermark"
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # 输出文件路径
-        output_file = os.path.join(output_dir, file_name)
-        
-        # 获取水印文本
-        watermark_text = get_exif_datetime(args.image_path)
-        # 添加水印
-        add_watermark(args.image_path, output_file, watermark_text, args.font_size, color, args.position)
+    print(args.__str__())
+    print(args)
+    # 检查输入目录是否存在
+    if not os.path.isdir(args.input_dir):
+        print(f"错误: 目录 '{args.input_dir}' 不存在")
+        return
 
+    # 处理目录
+    process_directory(args.input_dir, args.size, args.color, args.position)
+    print("水印添加完成！")
 
-if __name__ == '__main__':
+"""
+运行示例：
+python image_watermark.py -s 40 -c black -p "center" D:\code_2\vibe_coding\
+或者
+python image_watermark.py D:\code_2\vibe_coding\
+
+图片位置参数一定要带上，其他参数可以按需添加。
+"""
+if __name__ == "__main__":
     main()
